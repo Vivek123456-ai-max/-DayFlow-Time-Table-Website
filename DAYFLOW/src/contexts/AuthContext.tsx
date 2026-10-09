@@ -13,6 +13,7 @@ interface AuthContextType {
   signUp: (email: string, password: string, fullName: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   updateProfile: (updates: Partial<Profile>) => Promise<{ error: Error | null }>;
+  updatePassword: (password: string) => Promise<{ error: Error | null }>;
   refreshUserStats: () => Promise<void>;
   isDemoUser: boolean;
 }
@@ -144,6 +145,55 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [fetchProfileAndStats]);
 
+  // Realtime subscription for Profile & Stats changes across devices
+  useEffect(() => {
+    if (!user?.id || isDemoUser) return;
+
+    const channel = supabase
+      .channel(`realtime_auth_${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${user.id}` },
+        (payload) => {
+          if (payload.new) {
+            setProfile(payload.new as Profile);
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'user_stats', filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          if (payload.new) {
+            setUserStats(payload.new as UserStats);
+          }
+        }
+      )
+      .subscribe();
+
+    const handleReconnect = () => {
+      if (user?.id && !isDemoUser) {
+        fetchProfileAndStats(user.id);
+      }
+    };
+
+    window.addEventListener('focus', handleReconnect);
+    window.addEventListener('online', handleReconnect);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        handleReconnect();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      supabase.removeChannel(channel);
+      window.removeEventListener('focus', handleReconnect);
+      window.removeEventListener('online', handleReconnect);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [user?.id, isDemoUser, fetchProfileAndStats]);
+
   const signIn = useCallback(async (email: string, password: string) => {
     setLoading(true);
     const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -217,6 +267,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { error: error as Error | null };
   }, [user, isDemoUser]);
 
+  const updatePassword = useCallback(async (password: string) => {
+    if (isDemoUser) return { error: null };
+    if (!user) return { error: new Error('User not logged in') };
+    const { error } = await supabase.auth.updateUser({ password });
+    return { error: error as Error | null };
+  }, [user, isDemoUser]);
+
   const refreshUserStats = useCallback(async () => {
     if (isDemoUser || !user) return;
     try {
@@ -246,6 +303,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         signUp,
         signOut,
         updateProfile,
+        updatePassword,
         refreshUserStats,
         isDemoUser,
       }}

@@ -102,6 +102,7 @@ create table if not exists public.user_badges (
 -- ==============================================================================
 -- REPLICA IDENTITY FULL FOR INSTANT REALTIME DELETE BROADCASTS
 -- ==============================================================================
+alter table public.profiles replica identity full;
 alter table public.tasks replica identity full;
 alter table public.task_completions replica identity full;
 alter table public.daily_stats replica identity full;
@@ -297,6 +298,9 @@ on conflict (code) do update set
 -- ==============================================================================
 do $$
 begin
+  if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'profiles') then
+    alter publication supabase_realtime add table public.profiles;
+  end if;
   if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'tasks') then
     alter publication supabase_realtime add table public.tasks;
   end if;

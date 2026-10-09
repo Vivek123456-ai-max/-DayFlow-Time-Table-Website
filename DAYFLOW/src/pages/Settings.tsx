@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
-import { Settings as SettingsIcon, User, Globe, Moon, Bell, Volume2, Save, LogOut } from 'lucide-react';
+import { Settings as SettingsIcon, User, Globe, Moon, Bell, Volume2, Save, LogOut, KeyRound } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { sounds } from '../lib/sound';
 
 export const Settings: React.FC = () => {
-  const { user, profile, updateProfile, signOut, isDemoUser } = useAuth();
+  const { user, profile, updateProfile, updatePassword, signOut, isDemoUser } = useAuth();
   const { theme, setTheme } = useTheme();
 
   const [fullName, setFullName] = useState(profile?.full_name || 'Vivek Kumar');
@@ -14,6 +14,10 @@ export const Settings: React.FC = () => {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+
+  const [newPassword, setNewPassword] = useState('');
+  const [passwordMsg, setPasswordMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [changingPassword, setChangingPassword] = useState(false);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -34,6 +38,24 @@ export const Settings: React.FC = () => {
   const handleSoundToggle = (val: boolean) => {
     setSoundEnabled(val);
     sounds.setMuted(!val);
+  };
+
+  const handlePasswordChange = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPassword || newPassword.length < 6) {
+      setPasswordMsg({ type: 'error', text: 'Password must be at least 6 characters long.' });
+      return;
+    }
+    setChangingPassword(true);
+    setPasswordMsg(null);
+    const { error } = await updatePassword(newPassword);
+    setChangingPassword(false);
+    if (error) {
+      setPasswordMsg({ type: 'error', text: error.message || 'Failed to update password.' });
+    } else {
+      setPasswordMsg({ type: 'success', text: 'Password updated successfully!' });
+      setNewPassword('');
+    }
   };
 
   return (
@@ -202,6 +224,48 @@ export const Settings: React.FC = () => {
           </button>
         </div>
       </form>
+
+      {/* Security & Password */}
+      {!isDemoUser && (
+        <div className="glass-card rounded-3xl p-6 space-y-4">
+          <div className="flex items-center gap-2 pb-3 border-b border-slate-800 text-sm font-bold text-slate-200">
+            <KeyRound className="w-4 h-4 text-emerald-400" />
+            <span>Security & Password</span>
+          </div>
+
+          {passwordMsg && (
+            <div
+              className={`p-3 rounded-xl text-xs font-semibold ${
+                passwordMsg.type === 'success'
+                  ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
+                  : 'bg-red-500/10 border border-red-500/20 text-red-400'
+              }`}
+            >
+              {passwordMsg.text}
+            </div>
+          )}
+
+          <form onSubmit={handlePasswordChange} className="flex flex-col sm:flex-row gap-3">
+            <div className="flex-1">
+              <input
+                type="password"
+                placeholder="Enter new password (min 6 characters)"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 focus:border-emerald-500 rounded-xl px-4 py-2 text-sm text-slate-100 focus:outline-none"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={changingPassword || !newPassword}
+              className="px-5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-emerald-400 font-bold text-xs transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              <span>{changingPassword ? 'Updating...' : 'Update Password'}</span>
+            </button>
+          </form>
+        </div>
+      )}
 
       {/* Account Actions */}
       <div className="glass-card rounded-3xl p-6 border-red-500/20 flex flex-col sm:flex-row items-center justify-between gap-4">

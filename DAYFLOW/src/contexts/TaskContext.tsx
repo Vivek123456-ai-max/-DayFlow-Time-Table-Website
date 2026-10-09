@@ -91,87 +91,104 @@ export const TaskProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [effectiveUserId]);
 
-  // Fetch all user data once on mount / effectiveUserId change
-  useEffect(() => {
-    let isMounted = true;
+  // Reusable full data fetch from Supabase
+  const loadDataFromSupabase = useCallback(async (isInitial = false) => {
+    if (!effectiveUserId) return;
+    try {
+      if (isInitial) setLoading(true);
+      else setIsSyncing(true);
 
-    const loadInitialData = async () => {
-      try {
-        setLoading(true);
+      const [tasksRes, compRes, statsRes, badgeRes] = await Promise.allSettled([
+        supabase
+          .from('tasks')
+          .select('*')
+          .eq('user_id', effectiveUserId)
+          .eq('is_active', true)
+          .order('start_time', { ascending: true }),
+        supabase.from('task_completions').select('*').eq('user_id', effectiveUserId),
+        supabase.from('daily_stats').select('*').eq('user_id', effectiveUserId).order('date', { ascending: false }),
+        supabase.from('user_badges').select('badge:badges(code)').eq('user_id', effectiveUserId),
+      ]);
 
-        // Instant local cache restore
-        const savedTasks = localStorage.getItem(`dayflow_tasks_${effectiveUserId}`);
-        const savedComp = localStorage.getItem(`dayflow_comp_${effectiveUserId}`);
-        const savedStats = localStorage.getItem(`dayflow_stats_${effectiveUserId}`);
-        const savedBadges = localStorage.getItem(`dayflow_badges_${effectiveUserId}`);
-
-        if (savedTasks && isMounted) setTasks(JSON.parse(savedTasks));
-        if (savedComp && isMounted) setCompletions(JSON.parse(savedComp));
-        if (savedStats && isMounted) setDailyStatsList(JSON.parse(savedStats));
-        if (savedBadges && isMounted) setUnlockedBadgeCodes(new Set(JSON.parse(savedBadges)));
-
-        // Background query to Supabase
-        const [tasksRes, compRes, statsRes, badgeRes] = await Promise.allSettled([
-          supabase.from('tasks').select('*').eq('user_id', effectiveUserId).eq('is_active', true).order('start_time', { ascending: true }),
-          supabase.from('task_completions').select('*').eq('user_id', effectiveUserId),
-          supabase.from('daily_stats').select('*').eq('user_id', effectiveUserId).order('date', { ascending: false }),
-          supabase.from('user_badges').select('badge:badges(code)').eq('user_id', effectiveUserId),
-        ]);
-
-        if (!isMounted) return;
-
-        if (tasksRes.status === 'fulfilled' && tasksRes.value.data) {
-          setTasks(tasksRes.value.data as Task[]);
-        }
-        if (compRes.status === 'fulfilled' && compRes.value.data) {
-          setCompletions(compRes.value.data as TaskCompletion[]);
-        }
-        if (statsRes.status === 'fulfilled' && statsRes.value.data) {
-          setDailyStatsList(statsRes.value.data as DailyStats[]);
-        }
-        if (badgeRes.status === 'fulfilled' && badgeRes.value.data) {
-          const codes = new Set<string>();
-          badgeRes.value.data.forEach((b: any) => {
-            if (b.badge?.code) codes.add(b.badge.code);
-          });
-          if (codes.size > 0) setUnlockedBadgeCodes(codes);
-        }
-        setIsDbConnected(true);
-      } catch (err) {
-        console.warn('Initial data load notice:', err);
-      } finally {
-        if (isMounted) setLoading(false);
+      if (tasksRes.status === 'fulfilled' && tasksRes.value.data) {
+        const fetchedTasks = tasksRes.value.data as Task[];
+        setTasks(fetchedTasks);
       }
-    };
-
-    loadInitialData();
-
-    return () => {
-      isMounted = false;
-    };
+      if (compRes.status === 'fulfilled' && compRes.value.data) {
+        const fetchedComp = compRes.value.data as TaskCompletion[];
+        setCompletions(fetchedComp);
+      }
+      if (statsRes.status === 'fulfilled' && statsRes.value.data) {
+        const fetchedStats = statsRes.value.data as DailyStats[];
+        setDailyStatsList(fetchedStats);
+      }
+      if (badgeRes.status === 'fulfilled' && badgeRes.value.data) {
+        const codes = new Set<string>();
+        badgeRes.value.data.forEach((b: any) => {
+          if (b.badge?.code) codes.add(b.badge.code);
+        });
+        if (codes.size > 0) setUnlockedBadgeCodes(codes);
+      }
+      setIsDbConnected(true);
+    } catch (err) {
+      console.warn('Data sync notice:', err);
+    } finally {
+      if (isInitial) setLoading(false);
+      setIsSyncing(false);
+    }
   }, [effectiveUserId]);
 
-  // Realtime Supabase Database Subscriptions — STABLE (Established once per user)
+  // Initial mount load (with localStorage instant cache)
+  useEffect(() => {
+    // Instant local cache restore
+    const savedTasks = localStorage.getItem(`dayflow_tasks_${effectiveUserId}`);
+    const savedComp = localStorage.getItem(`dayflow_comp_${effectiveUserId}`);
+    const savedStats = localStorage.getItem(`dayflow_stats_${effectiveUserId}`);
+    const savedBadges = localStorage.getItem(`dayflow_badges_${effectiveUserId}`);
+
+    if (savedTasks) setTasks(JSON.parse(savedTasks));
+    if (savedComp) setCompletions(JSON.parse(savedComp));
+    if (savedStats) setDailyStatsList(JSON.parse(savedStats));
+    if (savedBadges) setUnlockedBadgeCodes(new Set(JSON.parse(savedBadges)));
+
+    loadDataFromSupabase(true);
+  }, [effectiveUserId, loadDataFromSupabase]);
+
+  // Realtime Supabase Database Subscriptions across ALL devices
   useEffect(() => {
     if (!effectiveUserId) return;
 
     const channel = supabase
-      .channel(`realtime_${effectiveUserId}`)
+      .channel(`realtime_dayflow_${effectiveUserId}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'tasks', filter: `user_id=eq.${effectiveUserId}` },
         (payload) => {
           if (payload.eventType === 'INSERT') {
+            const newTask = payload.new as Task;
+            if (!newTask.is_active) return;
             setTasks((prev) => {
-              if (prev.some((t) => t.id === payload.new.id)) return prev;
-              return [...prev, payload.new as Task].sort((a, b) => a.start_time.localeCompare(b.start_time));
+              if (prev.some((t) => t.id === newTask.id)) return prev;
+              const next = [...prev, newTask].sort((a, b) => a.start_time.localeCompare(b.start_time));
+              saveLocalBackup(next, completionsRef.current, dailyStatsListRef.current, unlockedBadgeCodesRef.current);
+              return next;
             });
           } else if (payload.eventType === 'UPDATE') {
-            setTasks((prev) =>
-              prev.map((t) => (t.id === payload.new.id ? (payload.new as Task) : t))
-            );
+            const updatedTask = payload.new as Task;
+            setTasks((prev) => {
+              const next = updatedTask.is_active
+                ? prev.map((t) => (t.id === updatedTask.id ? updatedTask : t))
+                : prev.filter((t) => t.id !== updatedTask.id);
+              saveLocalBackup(next, completionsRef.current, dailyStatsListRef.current, unlockedBadgeCodesRef.current);
+              return next;
+            });
           } else if (payload.eventType === 'DELETE') {
-            setTasks((prev) => prev.filter((t) => t.id !== payload.old.id));
+            const deletedId = payload.old.id;
+            setTasks((prev) => {
+              const next = prev.filter((t) => t.id !== deletedId);
+              saveLocalBackup(next, completionsRef.current, dailyStatsListRef.current, unlockedBadgeCodesRef.current);
+              return next;
+            });
           }
         }
       )
@@ -180,12 +197,22 @@ export const TaskProvider: React.FC<{ children: React.ReactNode }> = ({ children
         { event: '*', schema: 'public', table: 'task_completions', filter: `user_id=eq.${effectiveUserId}` },
         (payload) => {
           if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            const newComp = payload.new as TaskCompletion;
             setCompletions((prev) => {
-              const filtered = prev.filter((c) => c.id !== payload.new.id);
-              return [...filtered, payload.new as TaskCompletion];
+              const filtered = prev.filter(
+                (c) => c.id !== newComp.id && !(c.task_id === newComp.task_id && c.completion_date === newComp.completion_date)
+              );
+              const next = [...filtered, newComp];
+              saveLocalBackup(tasksRef.current, next, dailyStatsListRef.current, unlockedBadgeCodesRef.current);
+              return next;
             });
           } else if (payload.eventType === 'DELETE') {
-            setCompletions((prev) => prev.filter((c) => c.id !== payload.old.id));
+            const oldId = payload.old.id;
+            setCompletions((prev) => {
+              const next = prev.filter((c) => c.id !== oldId);
+              saveLocalBackup(tasksRef.current, next, dailyStatsListRef.current, unlockedBadgeCodesRef.current);
+              return next;
+            });
           }
         }
       )
@@ -194,9 +221,12 @@ export const TaskProvider: React.FC<{ children: React.ReactNode }> = ({ children
         { event: '*', schema: 'public', table: 'daily_stats', filter: `user_id=eq.${effectiveUserId}` },
         (payload) => {
           if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            const newStat = payload.new as DailyStats;
             setDailyStatsList((prev) => {
-              const filtered = prev.filter((s) => s.date !== (payload.new as DailyStats).date);
-              return [payload.new as DailyStats, ...filtered].sort((a, b) => b.date.localeCompare(a.date));
+              const filtered = prev.filter((s) => s.date !== newStat.date);
+              const next = [newStat, ...filtered].sort((a, b) => b.date.localeCompare(a.date));
+              saveLocalBackup(tasksRef.current, completionsRef.current, next, unlockedBadgeCodesRef.current);
+              return next;
             });
           }
         }
@@ -208,12 +238,57 @@ export const TaskProvider: React.FC<{ children: React.ReactNode }> = ({ children
           refreshUserStatsRef.current();
         }
       )
-      .subscribe();
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'user_badges', filter: `user_id=eq.${effectiveUserId}` },
+        async () => {
+          try {
+            const { data } = await supabase
+              .from('user_badges')
+              .select('badge:badges(code)')
+              .eq('user_id', effectiveUserId);
+            if (data) {
+              const codes = new Set<string>();
+              data.forEach((b: any) => {
+                if (b.badge?.code) codes.add(b.badge.code);
+              });
+              setUnlockedBadgeCodes(codes);
+              saveLocalBackup(tasksRef.current, completionsRef.current, dailyStatsListRef.current, codes);
+            }
+          } catch {
+            // ignore
+          }
+        }
+      )
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          setIsDbConnected(true);
+        } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          setIsDbConnected(false);
+        }
+      });
+
+    // Auto-reconnect & fetch updates when device wakes up or window is focused
+    const handleDeviceWakeOrOnline = () => {
+      loadDataFromSupabase(false);
+    };
+
+    window.addEventListener('focus', handleDeviceWakeOrOnline);
+    window.addEventListener('online', handleDeviceWakeOrOnline);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        handleDeviceWakeOrOnline();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       supabase.removeChannel(channel);
+      window.removeEventListener('focus', handleDeviceWakeOrOnline);
+      window.removeEventListener('online', handleDeviceWakeOrOnline);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [effectiveUserId]);
+  }, [effectiveUserId, loadDataFromSupabase, saveLocalBackup]);
 
   // Helper to filter tasks for a given date
   const getTasksForDate = useCallback((dateStr: string, currentTasksList: Task[] = tasks): DayTaskItem[] => {

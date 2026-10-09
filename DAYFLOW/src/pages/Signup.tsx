@@ -23,7 +23,11 @@ export const Signup: React.FC = () => {
     setLoading(false);
 
     if (signUpErr) {
-      setError(signUpErr.message || 'Failed to create account. Please check your credentials.');
+      if (signUpErr.message?.toLowerCase().includes('rate limit')) {
+        setError('Supabase email rate limit reached. Please disable "Confirm email" in Supabase Dashboard (Auth > Providers > Email) or try Instant Demo Mode below.');
+      } else {
+        setError(signUpErr.message || 'Failed to create account. Please check your credentials.');
+      }
     } else {
       navigate('/onboarding');
     }
